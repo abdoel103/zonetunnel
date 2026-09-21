@@ -9,18 +9,18 @@ def print_step(msg):
 
 def run_cmd(ssh, cmd, user, password, hide_output=False):
     """Executes a command over SSH. Handles sudo securely via stdin if not root."""
-    if user != 'root':
+    if user != "root":
         cmd = f"sudo -S -p '' bash -c '{cmd}'"
 
     stdin, stdout, stderr = ssh.exec_command(cmd)
 
-    if user != 'root':
-        stdin.write(password + '\n')
+    if user != "root":
+        stdin.write(password + "\n")
         stdin.flush()
 
     exit_status = stdout.channel.recv_exit_status()
-    out = stdout.read().decode('utf-8').strip()
-    err = stderr.read().decode('utf-8').strip()
+    out = stdout.read().decode("utf-8", errors="replace").strip()
+    err = stderr.read().decode("utf-8", errors="replace").strip()
 
     if not hide_output and out:
         print(out)
@@ -32,10 +32,10 @@ def run_cmd(ssh, cmd, user, password, hide_output=False):
 
 
 def write_file_remote(ssh, filepath, content, user, password):
-    """Writes multi-line text to a file on the remote server securely using sudo."""
+    """Writes multi-line text to a file on the remote server securely."""
     safe_content = content.replace("'", "'\\''")
     cmd = f"cat << 'EOF' > {filepath}\n{safe_content}\nEOF"
-    run_cmd(ssh, cmd, user, password, hide_output=True)
+    return run_cmd(ssh, cmd, user, password, hide_output=True)
 
 
 def main():
@@ -52,27 +52,33 @@ def main():
 
     ack = input("Have you set up your DNS records? Type 'y' to continue: ").strip().lower()
 
-    if ack != 'y':
+    if ack != "y":
         print("Please configure your DNS records first. Exiting.")
         sys.exit(0)
 
-    # Collect inputs
     print("\n--- Server Details ---")
+
     host = input("IPv4 address of the server: ").strip()
 
-    # SSH Port handling
     ssh_port_input = input("SSH Port (default: 22): ").strip()
     ssh_port = int(ssh_port_input) if ssh_port_input.isdigit() else 22
 
     user = input("User (default: root): ").strip() or "root"
     password = getpass.getpass("Password: ")
-    domain = input("Tunnel domain name (e.g., t.example.com): ").strip()
-    record_type = input(
-        "Record type (caa, null, txt) [default: caa]: "
-    ).strip().lower() or "caa"
 
-    # Connect to Server
+    domain = input(
+        "Tunnel domain name (e.g., t.example.com): "
+    ).strip()
+
+    record_type = (
+        input(
+            "Record type (caa, null, txt) [default: caa]: "
+        ).strip().lower()
+        or "caa"
+    )
+
     print_step(f"Connecting to {host}:{ssh_port} as {user}")
+
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -85,12 +91,14 @@ def main():
             timeout=10
         )
         print("[+] Successfully connected!")
+
     except Exception as e:
         print(f"[-] SSH Connection failed: {e}")
         sys.exit(1)
 
     # Detect Remote Operating System
     print_step("Detecting remote operating system architecture")
+
     _, os_info, _ = run_cmd(
         ssh,
         "cat /etc/os-release",
@@ -101,7 +109,10 @@ def main():
 
     os_info_lower = os_info.lower()
 
-    is_ubuntu = "ubuntu" in os_info_lower or "debian" in os_info_lower
+    is_ubuntu = (
+        "ubuntu" in os_info_lower
+        or "debian" in os_info_lower
+    )
 
     if is_ubuntu:
         print("[+] Detected Environment: Ubuntu/Debian Base")
@@ -131,6 +142,7 @@ def main():
             user,
             password
         )
+
     else:
         run_cmd(
             ssh,
@@ -153,11 +165,11 @@ def main():
             password
         )
 
-    # 2. Firewall Configuration (UFW vs Firewalld)
+    # 2. Firewall Configuration
     print_step("Configuring target platform firewall policies")
 
     if is_ubuntu:
-        # Idiomatic Ubuntu Firewall Configuration using UFW + Native iptables routing tables
+
         run_cmd(
             ssh,
             "systemctl start ufw",
@@ -172,7 +184,6 @@ def main():
             password
         )
 
-        # Explicitly prevent SSH lockouts using the custom port
         run_cmd(
             ssh,
             f"ufw allow {ssh_port}/tcp",
@@ -180,10 +191,10 @@ def main():
             password
         )
 
-        # Insert NAT rules safely at line 1 of UFW's before.rules structure
         nat_rule_cmd = (
             "if ! grep -q '*nat' /etc/ufw/before.rules; then "
-            "sed -i '1i *nat\\n:PREROUTING ACCEPT [0:0]\\n"
+            "sed -i '1i *nat\\n"
+            ":PREROUTING ACCEPT [0:0]\\n"
             "-A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300\\n"
             "COMMIT\\n' /etc/ufw/before.rules; "
             "fi"
@@ -218,7 +229,7 @@ def main():
         )
 
     else:
-        # Idiomatic RHEL Firewall Configuration using Firewalld
+
         run_cmd(
             ssh,
             "systemctl start firewalld",
@@ -233,7 +244,6 @@ def main():
             password
         )
 
-        # Explicitly prevent SSH lockouts using the custom port
         run_cmd(
             ssh,
             f"firewall-cmd --permanent --add-port={ssh_port}/tcp",
@@ -284,34 +294,112 @@ def main():
         "Downloading deployment binary and generating secure cryptographic keys"
     )
 
-    binary_url = "77777"
+    binary_url = (
+        "https://github.com/abdoel103/zonetunnel/raw/refs/heads/main/server"
+    )
 
     setup_cmds = f"""
+set -e
+
 cd /tmp
-curl -sL {binary_url} -o vaydns-server
+
+rm -f vaydns-server
+rm -f server.key server.pub
+
+curl -fL "{binary_url}" -o vaydns-server
+
 chmod +x vaydns-server
-./vaydns-server -gen-key -privkey-file server.key -pubkey-file server.pub
+
+/opt/glibc-2.34/lib/ld-linux-x86-64.so.2 \
+--library-path /opt/glibc-2.34/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu \
+./vaydns-server \
+-gen-key \
+-privkey-file server.key \
+-pubkey-file server.pub
+
 mkdir -p /etc/vaydns
+
 mv server.key server.pub /etc/vaydns/
+
 chown -R vaydns:vaydns /etc/vaydns
-mv vaydns-server /usr/local/bin/
-chmod 755 /usr/local/bin/vaydns-server
+
+mv vaydns-server /usr/local/bin/vaydns-server.bin
+
+chmod 755 /usr/local/bin/vaydns-server.bin
 """
 
-    run_cmd(
+    setup_status, _, _ = run_cmd(
         ssh,
         setup_cmds,
         user,
         password
     )
 
+    if setup_status != 0:
+        print(
+            "\n[!] VayDNS binary installation failed."
+        )
+        ssh.close()
+        sys.exit(1)
+
+    # 5. Create GLIBC 2.34 wrapper
+    print_step(
+        "Creating VayDNS GLIBC 2.34 runtime wrapper"
+    )
+
+    wrapper_content = """#!/bin/bash
+
+exec /opt/glibc-2.34/lib/ld-linux-x86-64.so.2 \\
+--library-path /opt/glibc-2.34/lib:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu \\
+/usr/local/bin/vaydns-server.bin "$@"
+"""
+
+    wrapper_status, _, _ = write_file_remote(
+        ssh,
+        "/usr/local/bin/vaydns-server",
+        wrapper_content,
+        user,
+        password
+    )
+
+    if wrapper_status != 0:
+        print(
+            "\n[!] Failed to create VayDNS runtime wrapper."
+        )
+        ssh.close()
+        sys.exit(1)
+
+    run_cmd(
+        ssh,
+        "chmod 755 /usr/local/bin/vaydns-server",
+        user,
+        password
+    )
+
     # Apply Mandatory MAC Security Constraints Context only on Enterprise Linux Systems
     if not is_ubuntu:
-        print_step("Applying target SELinux security context rules")
+
+        print_step(
+            "Applying target SELinux security context rules"
+        )
+
+        run_cmd(
+            ssh,
+            'semanage fcontext -a -t bin_t "/usr/local/bin/vaydns-server.bin"',
+            user,
+            password
+        )
 
         run_cmd(
             ssh,
             'semanage fcontext -a -t bin_t "/usr/local/bin/vaydns-server"',
+            user,
+            password
+        )
+
+        run_cmd(
+            ssh,
+            "restorecon -v /usr/local/bin/vaydns-server.bin",
             user,
             password
         )
@@ -323,8 +411,10 @@ chmod 755 /usr/local/bin/vaydns-server
             password
         )
 
-    # 5. Create SystemD Service
-    print_step("Writing systemd architectural service blocks")
+    # 6. Create SystemD Service
+    print_step(
+        "Writing systemd architectural service blocks"
+    )
 
     vaydns_service_content = f"""[Unit]
 
@@ -344,8 +434,6 @@ RestartSec=5
 KillMode=mixed
 TimeoutStopSec=5
 
-Security settings
-
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -357,7 +445,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 
 [Install]
-WantedBy=multi-user.target"""
+WantedBy=multi-user.target
+"""
 
     write_file_remote(
         ssh,
@@ -367,7 +456,7 @@ WantedBy=multi-user.target"""
         password
     )
 
-    # 6. Configure Dante Proxy Matrix
+    # 7. Configure Dante Proxy
     print_step(
         f"Deploying custom configurations to {dante_config_path}"
     )
@@ -397,7 +486,8 @@ socks pass {
 from: 127.0.0.1/32 to: 0.0.0.0/0
 protocol: tcp udp
 log: connect error
-}"""
+}
+"""
 
     write_file_remote(
         ssh,
@@ -407,7 +497,7 @@ log: connect error
         password
     )
 
-    # 7. Start Services
+    # 8. Start Services
     print_step(
         f"Booting up and enabling backend Dante proxy ({dante_service})"
     )
@@ -419,7 +509,7 @@ log: connect error
         password
     )
 
-    run_cmd(
+    dante_status, _, _ = run_cmd(
         ssh,
         f"systemctl start {dante_service}",
         user,
@@ -433,13 +523,25 @@ log: connect error
         password
     )
 
+    if dante_status != 0:
+        print(
+            f"\n[!] Warning: {dante_service} did not start successfully."
+        )
+
     print_step(
-        "Booting up and enabling VayDNS core tunnel core infrastructure"
+        "Booting up and enabling VayDNS core tunnel infrastructure"
     )
 
     run_cmd(
         ssh,
-        "systemctl start vaydns-server",
+        "systemctl daemon-reload",
+        user,
+        password
+    )
+
+    vaydns_status, _, _ = run_cmd(
+        ssh,
+        "systemctl restart vaydns-server",
         user,
         password
     )
@@ -451,7 +553,12 @@ log: connect error
         password
     )
 
-    # 8. Retrieve Data
+    if vaydns_status != 0:
+        print(
+            "\n[!] Warning: vaydns-server did not start successfully."
+        )
+
+    # 9. Retrieve Data
     print_step(
         "Fetching generation keys and diagnostics reports from deployment"
     )
@@ -476,7 +583,7 @@ log: connect error
 
     ssh.close()
 
-    # 9. Output Results to User
+    # 10. Output Results
     print("\n===================================================================")
     print("                    SERVER STATUS REPORT")
     print("===================================================================")
@@ -485,14 +592,19 @@ log: connect error
 
     if not pubkey:
         print(
-            "\n[!] Error: Could not retrieve the public key. Check the server logs."
+            "\n[!] Error: Could not retrieve the public key. "
+            "Check the server logs."
         )
         sys.exit(1)
 
     client_config_url = (
         f"dnst://{domain}/vaydns/socks5?"
-        f"pubkey={pubkey}&record-type={record_type}"
-        f"&clientid-size=2&keepalive=2s&idle-timeout=10s#vaydns"
+        f"pubkey={pubkey}"
+        f"&record-type={record_type}"
+        f"&clientid-size=2"
+        f"&keepalive=2s"
+        f"&idle-timeout=10s"
+        f"#vaydns"
     )
 
     print(
