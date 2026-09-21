@@ -1,278 +1,267 @@
-#!/bin/bash
-dateFromServer=$(curl -v --insecure --silent https://google.com/ 2>&1 | grep Date | sed -e 's/< Date: //')
-biji=`date +"%Y-%m-%d" -d "$dateFromServer"`
-#########################
+import paramiko
+import getpass
+import sys
 
-clear
-red='\e[1;31m'
-green='\e[0;32m'
-yell='\e[1;33m'
-tyblue='\e[1;36m'
-NC='\e[0m'
-purple() { echo -e "\\033[35;1m${*}\\033[0m"; }
-tyblue() { echo -e "\\033[36;1m${*}\\033[0m"; }
-yellow() { echo -e "\\033[33;1m${*}\\033[0m"; }
-green() { echo -e "\\033[32;1m${*}\\033[0m"; }
-red() { echo -e "\\033[31;1m${*}\\033[0m"; }
-cd /root
-#System version number
-if [ "${EUID}" -ne 0 ]; then
-		echo "You need to run this script as root"
-		exit 1
-fi
-if [ "$(systemd-detect-virt)" == "openvz" ]; then
-		echo "OpenVZ is not supported"
-		exit 1
-fi
+def print_step(msg):
+print(f"\n[*] {msg}...")
 
-localip=$(hostname -I | cut -d\  -f1)
-hst=( `hostname` )
-dart=$(cat /etc/hosts | grep -w `hostname` | awk '{print $2}')
-if [[ "$hst" != "$dart" ]]; then
-echo "$localip $(hostname)" >> /etc/hosts
-fi
+def run_cmd(ssh, cmd, user, password, hide_output=False):
+"""Executes a command over SSH. Handles sudo securely via stdin if not root."""
+if user != 'root':
+cmd = f"sudo -S -p '' bash -c '{cmd}'"
 
-mkdir -p /etc/xray
-mkdir -p /etc/v2ray
-touch /etc/xray/domain
-touch /etc/v2ray/domain
-touch /etc/xray/scdomain
-touch /etc/v2ray/scdomain
+stdin, stdout, stderr = ssh.exec_command(cmd)  
+  
+if user != 'root':  
+    stdin.write(password + '\n')  
+    stdin.flush()  
+      
+exit_status = stdout.channel.recv_exit_status()  
+out = stdout.read().decode('utf-8').strip()  
+err = stderr.read().decode('utf-8').strip()  
+  
+if not hide_output and out:  
+    print(out)  
+if exit_status != 0 and err:  
+    print(f"[!] Error executing command: {err}")  
+      
+return exit_status, out, err
 
+def write_file_remote(ssh, filepath, content, user, password):
+"""Writes multi-line text to a file on the remote server securely using sudo."""
+safe_content = content.replace("'", "'\''")
+cmd = f"cat << 'EOF' > {filepath}\n{safe_content}\nEOF"
+run_cmd(ssh, cmd, user, password, hide_output=True)
 
-echo -e "[ ${tyblue}NOTES${NC} ] Before we go.. "
-sleep 1
-echo -e "[ ${tyblue}NOTES${NC} ] I need check your headers first.."
-sleep 2
-echo -e "[ ${green}INFO${NC} ] Checking headers"
-sleep 1
-totet=`uname -r`
-REQUIRED_PKG="linux-headers-$totet"
-PKG_OK=$(dpkg-query -W --showformat='${Status}\n' $REQUIRED_PKG|grep "install ok installed")
-echo Checking for $REQUIRED_PKG: $PKG_OK
-if [ "" = "$PKG_OK" ]; then
-  sleep 2
-  echo -e "[ ${yell}WARNING${NC} ] Try to install ...."
-  echo "No $REQUIRED_PKG. Setting up $REQUIRED_PKG."
-  apt-get --yes install $REQUIRED_PKG
-  sleep 1
-  echo ""
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] If error you need.. to do this"
-  sleep 1
-  echo ""
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] 1. apt update -y"
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] 2. apt upgrade -y"
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] 3. apt dist-upgrade -y"
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] 4. reboot"
-  sleep 1
-  echo ""
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] After rebooting"
-  sleep 1
-  echo -e "[ ${tyblue}NOTES${NC} ] Then run this script again"
-  echo -e "[ ${tyblue}NOTES${NC} ] if you understand then tap enter now"
-  read
-else
-  echo -e "[ ${green}INFO${NC} ] Oke installed"
-fi
+def main():
+print("===================================================================")
+print("           VayDNS Server Cross-Platform Setup Script")
+print("===================================================================")
+print("SUPPORTED OS:")
+print("- RHEL Distros (Rocky Linux 9/10, Alma Linux 9/10, etc.)")
+print("- Debian Distros (Ubuntu 22.04, Ubuntu 24.04, etc.)")
+print("\nREQUIREMENTS:")
+print("1. You MUST create an 'A' record and an 'NS' record in your domain registrar.")
+print("2. You need the root password or a user with sudo privileges.")
+print("===================================================================")
 
-ttet=`uname -r`
-ReqPKG="linux-headers-$ttet"
-if ! dpkg -s $ReqPKG  >/dev/null 2>&1; then
-  rm /root/setup.sh >/dev/null 2>&1 
-  exit
-else
-  clear
-fi
+ack = input("Have you set up your DNS records? Type 'y' to continue: ").strip().lower()  
+if ack != 'y':  
+    print("Please configure your DNS records first. Exiting.")  
+    sys.exit(0)  
 
+# Collect inputs  
+print("\n--- Server Details ---")  
+host = input("IPv4 address of the server: ").strip()  
+  
+# SSH Port handling  
+ssh_port_input = input("SSH Port (default: 22): ").strip()  
+ssh_port = int(ssh_port_input) if ssh_port_input.isdigit() else 22  
+  
+user = input("User (default: root): ").strip() or "root"  
+password = getpass.getpass("Password: ")  
+domain = input("Tunnel domain name (e.g., t.example.com): ").strip()  
+record_type = input("Record type (caa, null, txt) [default: caa]: ").strip().lower() or "caa"  
 
-secs_to_human() {
-    echo "Installation time : $(( ${1} / 3600 )) hours $(( (${1} / 60) % 60 )) minute's $(( ${1} % 60 )) seconds"
+# Connect to Server  
+print_step(f"Connecting to {host}:{ssh_port} as {user}")  
+ssh = paramiko.SSHClient()  
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())  
+  
+try:  
+    ssh.connect(hostname=host, port=ssh_port, username=user, password=password, timeout=10)  
+    print("[+] Successfully connected!")  
+except Exception as e:  
+    print(f"[-] SSH Connection failed: {e}")  
+    sys.exit(1)  
+
+# Detect Remote Operating System  
+print_step("Detecting remote operating system architecture")  
+_, os_info, _ = run_cmd(ssh, "cat /etc/os-release", user, password, hide_output=True)  
+os_info_lower = os_info.lower()  
+  
+is_ubuntu = "ubuntu" in os_info_lower or "debian" in os_info_lower  
+  
+if is_ubuntu:  
+    print("[+] Detected Environment: Ubuntu/Debian Base")  
+    dante_config_path = "/etc/danted.conf"  
+    dante_service = "danted"  
+else:  
+    print("[+] Detected Environment: RHEL/Rocky/Alma Base")  
+    dante_config_path = "/etc/sockd.conf"  
+    dante_service = "sockd"  
+
+# 1. System Updates & Packages  
+print_step("Updating system package repositories and installing core dependencies")  
+if is_ubuntu:  
+    run_cmd(ssh, "export DEBIAN_FRONTEND=noninteractive && apt-get update -y", user, password)  
+    run_cmd(ssh, "export DEBIAN_FRONTEND=noninteractive && apt-get install danted ufw curl sed tcpdump -y", user, password)  
+else:  
+    run_cmd(ssh, "dnf update -y", user, password)  
+    run_cmd(ssh, "dnf install epel-release -y", user, password)  
+    run_cmd(ssh, "dnf install dante-server firewalld policycoreutils-python-utils curl tcpdump -y", user, password)  
+
+# 2. Firewall Configuration (UFW vs Firewalld)  
+print_step("Configuring target platform firewall policies")  
+if is_ubuntu:  
+    # Idiomatic Ubuntu Firewall Configuration using UFW + Native iptables routing tables  
+    run_cmd(ssh, "systemctl start ufw", user, password)  
+    run_cmd(ssh, "systemctl enable ufw", user, password)  
+      
+    # Explicitly prevent SSH lockouts using the custom port  
+    run_cmd(ssh, f"ufw allow {ssh_port}/tcp", user, password)    
+      
+    # Insert NAT rules safely at line 1 of UFW's before.rules structure  
+    nat_rule_cmd = (  
+        "if ! grep -q '*nat' /etc/ufw/before.rules; then "  
+        "sed -i '1i *nat\\n:PREROUTING ACCEPT [0:0]\\n-A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300\\nCOMMIT\\n' /etc/ufw/before.rules; "  
+        "fi"  
+    )  
+    run_cmd(ssh, nat_rule_cmd, user, password)  
+    run_cmd(ssh, "ufw default deny incoming", user, password)  
+    run_cmd(ssh, "ufw --force enable", user, password)  
+    run_cmd(ssh, "ufw reload", user, password)  
+else:  
+    # Idiomatic RHEL Firewall Configuration using Firewalld  
+    run_cmd(ssh, "systemctl start firewalld", user, password)  
+    run_cmd(ssh, "systemctl enable firewalld", user, password)  
+      
+    # Explicitly prevent SSH lockouts using the custom port  
+    run_cmd(ssh, f"firewall-cmd --permanent --add-port={ssh_port}/tcp", user, password)  
+      
+    run_cmd(ssh, "firewall-cmd --permanent --add-forward-port=port=53:proto=udp:toport=5300", user, password)  
+    run_cmd(ssh, "firewall-cmd --permanent --zone=public --set-target=DROP", user, password)  
+    run_cmd(ssh, "firewall-cmd --permanent --add-masquerade", user, password)  
+    run_cmd(ssh, "firewall-cmd --reload", user, password)  
+
+# 3. Create Service User  
+print_step("Validating and creating system service accounts")  
+run_cmd(ssh, "id -u vaydns &>/dev/null || useradd -r -M -s /bin/false -c 'vaydns service user' -d /nonexistent vaydns", user, password)  
+
+# 4. Download Binary & Generate Keys  
+print_step("Downloading deployment binary and generating secure cryptographic keys")  
+binary_url = "77777"  
+  
+setup_cmds = f"""  
+cd /tmp  
+curl -sL {binary_url} -o vaydns-server  
+chmod +x vaydns-server  
+./vaydns-server -gen-key -privkey-file server.key -pubkey-file server.pub  
+mkdir -p /etc/vaydns  
+mv server.key server.pub /etc/vaydns/  
+chown -R vaydns:vaydns /etc/vaydns  
+mv vaydns-server /usr/local/bin/  
+chmod 755 /usr/local/bin/vaydns-server  
+"""  
+run_cmd(ssh, setup_cmds, user, password)  
+
+# Apply Mandatory MAC Security Constraints Context only on Enterprise Linux Systems  
+if not is_ubuntu:  
+    print_step("Applying target SELinux security context rules")  
+    run_cmd(ssh, 'semanage fcontext -a -t bin_t "/usr/local/bin/vaydns-server"', user, password)  
+    run_cmd(ssh, "restorecon -v /usr/local/bin/vaydns-server", user, password)  
+
+# 5. Create SystemD Service  
+print_step("Writing systemd architectural service blocks")  
+vaydns_service_content = f"""[Unit]
+
+Description=VayDNS Tunnel Server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=vaydns
+Group=vaydns
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStart=/usr/local/bin/vaydns-server -udp :5300 -privkey-file /etc/vaydns/server.key -mtu 1232 -record-type {record_type} -idle-timeout 10s -keepalive 2s -domain {domain} -upstream 127.0.0.1:8000
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=5
+
+Security settings
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/
+ReadWritePaths=/etc/vaydns
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target"""
+
+write_file_remote(ssh, "/etc/systemd/system/vaydns-server.service", vaydns_service_content, user, password)  
+
+# 6. Configure Dante Proxy Matrix  
+print_step(f"Deploying custom configurations to {dante_config_path}")  
+run_cmd(ssh, f"mv {dante_config_path} {dante_config_path}.1 || true", user, password)  
+  
+sockd_content = """logoutput: stderr
+
+internal: 127.0.0.1 port = 8000
+external: eth0
+socksmethod: none
+clientmethod: none
+#user.privileged: root
+#user.unprivileged: nobody
+
+client pass {
+from: 127.0.0.1/32 to: 0.0.0.0/0
+log: connect error
 }
-start=$(date +%s)
-ln -fs /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
-sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1
-sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1
 
-coreselect=''
-cat> /root/.profile << END
-# ~/.profile: executed by Bourne-compatible login shells.
+socks pass {
+from: 127.0.0.1/32 to: 0.0.0.0/0
+protocol: tcp udp
+log: connect error
+}"""
+write_file_remote(ssh, dante_config_path, sockd_content, user, password)
 
-if [ "$BASH" ]; then
-  if [ -f ~/.bashrc ]; then
-    . ~/.bashrc
-  fi
-fi
+# 7. Start Services  
+print_step(f"Booting up and enabling backend Dante proxy ({dante_service})")  
+run_cmd(ssh, "systemctl daemon-reload", user, password)  
+run_cmd(ssh, f"systemctl start {dante_service}", user, password)  
+run_cmd(ssh, f"systemctl enable {dante_service}", user, password)  
+  
+print_step("Booting up and enabling VayDNS core tunnel core infrastructure")  
+run_cmd(ssh, "systemctl start vaydns-server", user, password)  
+run_cmd(ssh, "systemctl enable vaydns-server", user, password)  
 
-mesg n || true
-clear
-END
-chmod 644 /root/.profile
+# 8. Retrieve Data  
+print_step("Fetching generation keys and diagnostics reports from deployment")  
+_, pubkey_raw, _ = run_cmd(ssh, "cat /etc/vaydns/server.pub", user, password, hide_output=True)  
+pubkey = pubkey_raw.strip()  
+  
+_, status_out, _ = run_cmd(ssh, "systemctl status vaydns-server --no-pager", user, password, hide_output=True)  
+  
+ssh.close()  
 
-echo -e "[ ${green}INFO${NC} ] Preparing the install file"
-apt install git curl -y >/dev/null 2>&1
-apt install python -y >/dev/null 2>&1
-echo -e "[ ${green}INFO${NC} ] Aight good ... installation file is ready"
-sleep 2
-echo -ne "[ ${green}INFO${NC} ] Check permission : "
+# 9. Output Results to User  
+print("\n===================================================================")  
+print("                    SERVER STATUS REPORT")  
+print("===================================================================")  
+print(status_out)  
+print("===================================================================")  
+  
+if not pubkey:  
+    print("\n[!] Error: Could not retrieve the public key. Check the server logs.")  
+    sys.exit(1)  
 
-mkdir -p /var/lib/julak >/dev/null 2>&1
-echo "IP=" >> /var/lib/julak/ipvps.conf
+client_config_url = f"dnst://{domain}/vaydns/socks5?pubkey={pubkey}&record-type={record_type}&clientid-size=2&keepalive=2s&idle-timeout=10s#vaydns"  
 
-echo ""
-wget -q https://raw.githubusercontent.com/galat41/bkn/main/tools.sh;chmod +x tools.sh;./tools.sh
-rm tools.sh
-clear
-yellow "Add Domain for vmess/vless/trojan dll"
-echo " "
-read -rp "Input ur domain : " -e pp
-    if [ -z $pp ]; then
-        echo -e "
-        Nothing input for domain!
-        Then a random domain will be created"
-    else
-        echo "$pp" > /root/scdomain
-	echo "$pp" > /etc/xray/scdomain
-	echo "$pp" > /etc/xray/domain
-	echo "$pp" > /etc/v2ray/domain
-	echo $pp > /root/domain
-        echo "IP=$pp" > /var/lib/julak/ipvps.conf
-    fi
-    
-#install ssh ovpn
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "$green      Install SSH / WS               $NC"
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-sleep 2
-clear
-wget -q https://raw.githubusercontent.com/galat41/bkn/main/waluh/ssh-vpn.sh && chmod +x ssh-vpn.sh && ./ssh-vpn.sh
-clear
-#Instal Xray
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "$green          Install XRAY              $NC"
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-sleep 2
-clear
-wget -q https://raw.githubusercontent.com/galat41/bkn/main/janda/ins-xray.sh && chmod +x ins-xray.sh && ./ins-xray.sh
-clear
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "$green          Install SSHWS              $NC"
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-sleep 2
-clear
-wget -q https://raw.githubusercontent.com/galat41/bkn/main/baku/insshws.sh && chmod +x insshws.sh && ./insshws.sh
-clear
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "$green          Install SSH UDP              $NC"
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-sleep 2
-clear
-wget -q https://lite.scvps.biz.id/rabah/udp-custom.sh &&  chmod +x udp-custom.sh && ./udp-custom.sh
-clear
-wget -q https://raw.githubusercontent.com/galat41/bkn/main/warik/julak && chmod +x julak && ./julak
-clear
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-echo -e "$green          Install Janda Pirang              $NC"
-echo -e "\e[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-sleep 2
-clear
-wget -q https://raw.githubusercontent.com/galat41/bkn/main/baku/ins-menu.sh && chmod +x ins-menu.sh && ./ins-menu.sh
-clear
-cat> /root/.profile << END
-# ~/.profile: executed by Bourne-compatible login shells.
+print("\n✅ DEPLOYMENT AND CONFIGURATION LINK GENERATION SUCCESSFUL!")  
+print("\n--- YOUR VAYDNS ANDROID READY STRING ---")  
+print(client_config_url)  
+print("\nImport Method:")  
+print("1. Launch VayDNS Android.")  
+print("2. Open context operations menu (top-right dashboard).")  
+print("3. Choose 'Import' and commit this string layout onto your configuration profile engine.")
 
-if [ "$BASH" ]; then
-  if [ -f ~/.bashrc ]; then
-    . ~/.bashrc
-  fi
-fi
-
-mesg n || true
-clear
-menu
-END
-chmod 644 /root/.profile
-
-if [ -f "/root/log-install.txt" ]; then
-rm /root/log-install.txt > /dev/null 2>&1
-fi
-if [ -f "/etc/afak.conf" ]; then
-rm /etc/afak.conf > /dev/null 2>&1
-fi
-if [ ! -f "/etc/log-create-user.log" ]; then
-echo "Log All Account " > /etc/log-create-user.log
-fi
-history -c
-echo $serverV > /opt/.ver
-aureb=$(cat /home/re_otm)
-b=11
-if [ $aureb -gt $b ]
-then
-gg="PM"
-else
-gg="AM"
-fi
-curl -sS ifconfig.me > /etc/myipvps
-echo " "
-echo "=====================-[ PAPADAAN STORE ]-===================="
-echo ""
-echo "------------------------------------------------------------"
-echo ""
-echo ""
-echo "   >>> Service & Port"  | tee -a log-install.txt
-echo "   - OpenSSH		: 22"  | tee -a log-install.txt
-echo "   - SSH Websocket	: 8088" | tee -a log-install.txt
-echo "   - SSH SSL Websocket	: 443" | tee -a log-install.txt
-echo "   - Stunnel4		: 447, 777" | tee -a log-install.txt
-echo "   - Dropbear		: 109, 143" | tee -a log-install.txt
-echo "   - Badvpn		: 7100-7900" | tee -a log-install.txt
-echo "   - Nginx		: 81" | tee -a log-install.txt
-echo "   - Vmess TLS		: 443" | tee -a log-install.txt
-echo "   - Vmess None TLS	: 80" | tee -a log-install.txt
-echo "   - Vless TLS		: 443" | tee -a log-install.txt
-echo "   - Vless None TLS	: 80" | tee -a log-install.txt
-echo "   - Trojan GRPC		: 443" | tee -a log-install.txt
-echo "   - Trojan WS		: 443" | tee -a log-install.txt
-echo "   - Trojan Go		: 443" | tee -a log-install.txt
-echo ""  | tee -a log-install.txt
-echo "   >>> Server Information & Other Features"  | tee -a log-install.txt
-echo "   - Timezone		: Asia/Jakarta (GMT +7)"  | tee -a log-install.txt
-echo "   - Fail2Ban		: [ON]"  | tee -a log-install.txt
-echo "   - Dflate		: [ON]"  | tee -a log-install.txt
-echo "   - IPtables		: [ON]"  | tee -a log-install.txt
-echo "   - Auto-Reboot		: [ON]"  | tee -a log-install.txt
-echo "   - IPv6			: [OFF]"  | tee -a log-install.txt
-echo "   - Autoreboot On	: $aureb:00 $gg GMT +7" | tee -a log-install.txt
-echo "   - AutoKill Multi Login User" | tee -a log-install.txt
-echo "   - Auto Delete Expired Account" | tee -a log-install.txt
-echo "   - Fully automatic script" | tee -a log-install.txt
-echo "   - VPS settings" | tee -a log-install.txt
-echo "   - Admin Control" | tee -a log-install.txt
-echo "   - Change port" | tee -a log-install.txt
-echo "   - Full Orders For Various Services" | tee -a log-install.txt
-echo ""
-echo ""
-echo "------------------------------------------------------------"
-echo ""
-echo "===============-[ Script Created By JULAK BANTUR ]-==============="
-echo -e ""
-echo ""
-echo "" | tee -a log-install.txt
-rm /root/setup.sh >/dev/null 2>&1
-rm /root/ins-xray.sh >/dev/null 2>&1
-rm /root/insshws.sh >/dev/null 2>&1
-secs_to_human "$(($(date +%s) - ${start}))" | tee -a log-install.txt
-echo -e "
-"
-echo -ne "[ ${yell}WARNING${NC} ] Do you want to reboot now ? (y/n)? "
-read answer
-if [ "$answer" == "${answer#[Yy]}" ] ;then
-exit 0
-else
-reboot
-fi
+if name == "main":
+main()
